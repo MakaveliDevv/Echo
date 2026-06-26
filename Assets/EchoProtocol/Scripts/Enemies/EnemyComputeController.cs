@@ -7,36 +7,26 @@ using UnityEngine.Rendering;
 
 namespace Assets.EchoProtocol.Scripts.Enemies
 {
-    /// <summary>
-    /// Data for one enemy as stored on the CPU and sent to the GPU.
-    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     public struct GPUEnemy
     {
         public Vector2 position;
         public Vector2 velocity;
-        public Vector2 targetPosition; // Current goal position: patrol point, scan point, player position, or return point.
+        public Vector2 targetPosition; 
         public float maxSpeed;
         public float detectionDistance;
         public float attackDistance;
 
-        // State machine values used by the compute shader.
         public int state;
         public float stateTimer;
         public int patrolIndex;
 
-        // 1 = enemy is active, 0 = enemy is ignored by simulation logic.
         public int active;
 
-        // Visual blend values read by GPUEnemyInstancedHologram.shader.
         public float investigateVisual;
         public float chaseVisual;
     }
 
-    /// <summary>
-    /// Simplified obstacle data sent to the compute shader.
-    /// The shader receives every obstacle as a top-down rectangle on the X/Z plane.
-    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     public struct GPUObstacle
     {
@@ -44,38 +34,23 @@ namespace Assets.EchoProtocol.Scripts.Enemies
         public Vector2 halfSize;
     }
 
-    /// <summary>
-    /// Enemy behaviour states. The integer values must match the state checks in EnemySimulation.compute.
-    /// </summary>
     public enum GPUEnemyState
     {
-        // Does not move until the shader receives a scan event.
         Dormant = 0,
 
-        // Follows the generated patrol route.
         Patrol = 1,
 
-        // Moves toward the last scan position.
         Investigate = 2,
 
-        // Follows the player when the player is close enough.
         Chase = 3,
 
-        // Waits/searches around the last known player or scan position.
         Search = 4,
 
-        // Goes back to the patrol route after losing the player.
         ReturnToPatrol = 5
     }
 
-    /// <summary>
-    /// CPU-side manager for the GPU enemy system.
-    /// This script prepares data for the compute shader, dispatches the simulation each frame,
-    /// draws the enemies with GPU instancing, and receives the "player was caught" result back from the GPU.
-    /// </summary>
     public class EnemyComputeController : MonoBehaviour
     {
-        // Safety limits. ComputeBuffers can handle more, but keeping the project small avoids GPU overload.
         private const int MaxNavigationPointsOnGpu = 512;
         private const int MaxPatrolPointsOnGpu = 512;
 
@@ -85,14 +60,12 @@ namespace Assets.EchoProtocol.Scripts.Enemies
         [SerializeField] private GameManager gameManager;
 
         [Header("Compute")]
-        // Compute shader that owns the actual enemy movement/state-machine logic.
         [SerializeField] private ComputeShader enemyComputeShader;
 
         [Header("Rendering")]
         [SerializeField] private Mesh enemyMesh;
         [SerializeField] private Material enemyMaterial;
 
-        // Rendering height/scale are visual only; the simulation itself is top-down X/Z movement.
         [SerializeField] private float enemyHeight = 1f;
         [SerializeField] private float enemyScale = 1f;
 
@@ -105,7 +78,7 @@ namespace Assets.EchoProtocol.Scripts.Enemies
         [SerializeField] private Vector2 speedRange = new Vector2(2f, 3.5f);
         [SerializeField] private float detectionDistance = 5f;
         [SerializeField] private float attackDistance = 1.2f;
-        [SerializeField] private float searchDuration = 4f; // Search duration is used after enemies lose the player or finish investigating.
+        [SerializeField] private float searchDuration = 4f; 
         [SerializeField] private float stoppingDistance = 0.5f;
         [SerializeField] private float steeringSpeed = 5f;
 
@@ -121,7 +94,7 @@ namespace Assets.EchoProtocol.Scripts.Enemies
         [SerializeField] private bool drawGeneratedNavigationPoints = true;
 
         [Header("Obstacle Boxes")]
-        [SerializeField] private BoxCollider[] obstacleColliders; // These are simplified into GPUObstacle rectangles and sent to the compute shader.
+        [SerializeField] private BoxCollider[] obstacleColliders; 
         [SerializeField] private float enemyRadius = 0.4f;
         [SerializeField] private float probeDistance = 4f;
 
@@ -130,19 +103,14 @@ namespace Assets.EchoProtocol.Scripts.Enemies
         [SerializeField] private Vector2 worldMaximum = new(30f, 30f);
 
         [Header("GPU Readback")]
-        // How often the CPU asks the GPU if an enemy has caught the player.
-        // This is not every frame because GPU readback can be expensive.
         [SerializeField, Min(0.02f)] private float attackCheckInterval = 0.1f;
 
-        // ComputeBuffers are arrays stored on the GPU.
-        // enemyBuffer is both simulated by the compute shader and read by the instanced material.
         private ComputeBuffer enemyBuffer;
         private ComputeBuffer patrolPointBuffer;
         private ComputeBuffer navigationPointBuffer;
         private ComputeBuffer obstacleBuffer;
-        private ComputeBuffer attackResultBuffer; // One-value buffer used like a flag: 0 = safe, 1 = player caught.
+        private ComputeBuffer attackResultBuffer; 
 
-        // Kernel IDs are the compute shader functions we dispatch.
         private int simulateKernel;
         private int resetAttackKernel;
 
@@ -158,7 +126,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
         private bool readbackPending;
         private float nextAttackCheckTime;
 
-        // PropertyToID values must match names in EnemySimulation.compute and GPUEnemyInstancedHologram.shader.
         private static readonly int EnemiesId = Shader.PropertyToID("_Enemies");
         private static readonly int PatrolPointsId = Shader.PropertyToID("_PatrolPoints");
         private static readonly int NavigationPointsId = Shader.PropertyToID("_NavigationPoints");
@@ -273,10 +240,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             resetAttackKernel = enemyComputeShader.FindKernel("ResetAttackResult");
         }
 
-        /// <summary>
-        /// Creates the enemy buffer and fills it with starting data.
-        /// After SetData(), the compute shader owns the movement changes each frame.
-        /// </summary>
         private void InitializeEnemyBuffer()
         {
             enemyCount = Mathf.Max(1, enemyCount);
@@ -302,7 +265,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
                 Vector2 startPosition = GetStartingPosition(i);
                 GPUEnemyState initialState = startDormant ? GPUEnemyState.Dormant : GPUEnemyState.Patrol;
 
-                // The patrol index decides where this enemy enters the generated patrol route.
                 int patrolIndex = GetClosestPatrolPointIndex(startPosition, i);
 
                 enemies[i] = new GPUEnemy
@@ -325,10 +287,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             enemyBuffer.SetData(enemies);
         }
 
-        /// <summary>
-        /// Finds the patrol point that best matches a spawn position.
-        /// Visible/reachable points are preferred so enemies do not start with a target behind a wall.
-        /// </summary>
         private int GetClosestPatrolPointIndex(Vector2 position, int fallbackIndex)
         {
             if (activePatrolPoints == null || activePatrolPoints.Length == 0)
@@ -346,7 +304,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             {
                 float sqrDistance = (activePatrolPoints[i] - position).sqrMagnitude;
 
-                // Keep the absolute nearest point as a fallback, even if the direct line is blocked.
                 if (sqrDistance < bestDistance)
                 {
                     bestDistance = sqrDistance;
@@ -361,7 +318,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
                     continue;
                 }
 
-                // Prefer the nearest point with a clear line of sight.
                 if (sqrDistance < bestVisibleDistance)
                 {
                     bestVisibleDistance = sqrDistance;
@@ -372,9 +328,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             return bestVisibleIndex >= 0 ? bestVisibleIndex : bestIndex;
         }
 
-        /// <summary>
-        /// Picks a spawn position for one enemy.
-        /// </summary>
         private Vector2 GetStartingPosition(int index)
         {
             if (startingPositions != null && startingPositions.Length > 0)
@@ -390,11 +343,9 @@ namespace Assets.EchoProtocol.Scripts.Enemies
 
             if (activeNavigationPoints != null && activeNavigationPoints.Length > 0)
             {
-                // If there are more enemies than points, modulo wraps back to the first point.
                 return activeNavigationPoints[index % activeNavigationPoints.Length];
             }
 
-            // Last normal fallback: try random positions that are not inside an obstacle.
             for (int attempt = 0; attempt < 30; attempt++)
             {
                 Vector2 randomPosition = new(
@@ -408,14 +359,9 @@ namespace Assets.EchoProtocol.Scripts.Enemies
                 }
             }
 
-            // Emergency fallback if every random point was blocked.
             return (worldMinimum + worldMaximum) * 0.5f;
         }
 
-        /// <summary>
-        /// CPU-side check used while generating navigation/patrol points.
-        /// It tests if a top-down point is inside any expanded obstacle rectangle.
-        /// </summary>
         private bool IsBlockedByObstacleColliders(Vector2 position, float extraPadding = 0f)
         {
             if (obstacleColliders == null)
@@ -435,7 +381,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
                 Vector2 halfSize = new(bounds.extents.x, bounds.extents.z);
                 Vector2 difference = Abs(position - center);
 
-                // Expand by enemyRadius so the center point does not get too close to wall edges.
                 Vector2 expandedHalfSize = halfSize + Vector2.one * (enemyRadius + extraPadding);
 
                 if (difference.x <= expandedHalfSize.x &&
@@ -448,10 +393,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             return false;
         }
 
-        /// <summary>
-        /// Checks whether a straight line from start to end crosses an obstacle.
-        /// Used to avoid generating patrol links that would cut through walls.
-        /// </summary>
         private bool IsSegmentBlockedByObstacleColliders(
             Vector2 start,
             Vector2 end,
@@ -489,10 +430,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             return false;
         }
 
-        /// <summary>
-        /// Tests a line segment against an axis-aligned rectangle.
-        /// This is the same top-down simplification used by the GPU obstacle system.
-        /// </summary>
         private static bool SegmentIntersectsExpandedBox(
             Vector2 start,
             Vector2 end,
@@ -529,10 +466,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             return tMax >= 0f && tMin <= 1f;
         }
 
-        /// <summary>
-        /// One axis of the segment-vs-box test.
-        /// "Slab" means the min/max range of a rectangle on one axis.
-        /// </summary>
         private static bool UpdateSlabIntersection(
             float start,
             float direction,
@@ -560,8 +493,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
         {
             activePatrolPoints = BuildPatrolPoints();
 
-            // A ComputeBuffer cannot have a count of 0, so allocate at least 1 item.
-            // The real count sent to the shader is still activePatrolPoints.Length.
             int bufferCount = Mathf.Max(1, activePatrolPoints.Length);
             Vector2[] patrolPoints = new Vector2[bufferCount];
 
@@ -579,10 +510,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             patrolPointBuffer.SetData(patrolPoints);
         }
 
-        /// <summary>
-        /// Creates the route enemies follow while patrolling.
-        /// At the moment this is fully automatic and based on the generated navigation points.
-        /// </summary>
         private Vector2[] BuildPatrolPoints()
         {
             if (activeNavigationPoints.Length > 0)
@@ -593,10 +520,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             return System.Array.Empty<Vector2>();
         }
 
-        /// <summary>
-        /// Builds a semi-random patrol route from reachable navigation points.
-        /// A new route is generated when the scene starts, so each play session can feel slightly different.
-        /// </summary>
         private Vector2[] BuildAutomaticPatrolRoute()
         {
             int maxRoutePointCount = Mathf.Clamp(
@@ -614,7 +537,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             List<Vector2> route = new(forwardRoutePointCount);
             HashSet<int> recentlyUsedIndices = new();
 
-            // Start from a random navigation point.
             int currentIndex = Random.Range(0, activeNavigationPoints.Length);
             Vector2 currentPoint = activeNavigationPoints[currentIndex];
 
@@ -623,7 +545,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
 
             for (int i = 1; i < forwardRoutePointCount; i++)
             {
-                // Pick another navigation point that is far enough away and not blocked by walls.
                 int nextIndex = FindNextReachablePatrolPointIndex(
                     currentPoint,
                     recentlyUsedIndices
@@ -631,7 +552,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
 
                 if (nextIndex < 0)
                 {
-                    // If every nearby point was recently used, allow reuse and try again.
                     recentlyUsedIndices.Clear();
 
                     nextIndex = FindNextReachablePatrolPointIndex(
@@ -654,19 +574,13 @@ namespace Assets.EchoProtocol.Scripts.Enemies
 
             if (route.Count < 2)
             {
-                // Not enough points to create a back-and-forth route.
                 return route.ToArray();
             }
 
-            return BuildPingPongPatrolRoute(route, maxRoutePointCount);
+            return BuildReversedPatrolRoute(route, maxRoutePointCount);
         }
 
-        /// <summary>
-        /// Turns a forward route into a back-and-forth route.
-        /// Example: A, B, C, D becomes A, B, C, D, C, B.
-        /// This prevents a long teleport-like jump from the last point directly back to the first.
-        /// </summary>
-        private static Vector2[] BuildPingPongPatrolRoute(
+        private static Vector2[] BuildReversedPatrolRoute(
             List<Vector2> forwardRoute,
             int maxRoutePointCount)
         {
@@ -691,10 +605,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             return closedRoute.ToArray();
         }
 
-        /// <summary>
-        /// Chooses a valid next patrol point from the generated navigation grid.
-        /// A valid point must be a useful distance away and have no obstacle between it and the current point.
-        /// </summary>
         private int FindNextReachablePatrolPointIndex(
             Vector2 currentPoint,
             HashSet<int> recentlyUsedIndices)
@@ -759,8 +669,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
         {
             activeNavigationPoints = BuildNavigationPoints();
 
-            // A ComputeBuffer cannot be empty, so allocate at least one slot.
-            // The shader still receives the real point count separately.
             int bufferCount = Mathf.Max(1, activeNavigationPoints.Length);
             Vector2[] navigationPoints = new Vector2[bufferCount];
 
@@ -778,19 +686,11 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             navigationPointBuffer.SetData(navigationPoints);
         }
 
-        /// <summary>
-        /// Entry point for navigation point creation.
-        /// Keeping this wrapper makes it easy to swap in another navigation generation method later.
-        /// </summary>
         private Vector2[] BuildNavigationPoints()
         {
             return BuildAutomaticNavigationPoints();
         }
 
-        /// <summary>
-        /// Generates walkable top-down points inside worldMinimum/worldMaximum.
-        /// If too many points are generated, spacing is increased until the result fits the GPU limit.
-        /// </summary>
         private Vector2[] BuildAutomaticNavigationPoints()
         {
             float spacing = Mathf.Max(0.5f, navigationPointSpacing);
@@ -819,15 +719,11 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             return points.ToArray();
         }
 
-        /// <summary>
-        /// Creates a grid of navigation points while skipping points inside/too close to obstacles.
-        /// The grid is simple but reliable for this project because enemies only need top-down movement.
-        /// </summary>
+
         private List<Vector2> GenerateNavigationGrid(float spacing, int stopAfterPointCount)
         {
             List<Vector2> points = new();
 
-            // Start positions are added first so enemies can always spawn near assigned locations.
             AddTransformsAsNavigationPoints(points, startingPositions, stopAfterPointCount);
 
             float minX = Mathf.Min(worldMinimum.x, worldMaximum.x);
@@ -851,13 +747,11 @@ namespace Assets.EchoProtocol.Scripts.Enemies
 
                     if (IsBlockedByObstacleColliders(point, navigationPointObstaclePadding))
                     {
-                        // Do not place navigation points inside walls or too close to wall edges.
                         continue;
                     }
 
                     if (ContainsNearbyPoint(points, point, spacing * 0.45f))
                     {
-                        // Avoid duplicates/near-duplicates, especially near manual start positions.
                         continue;
                     }
 
@@ -868,10 +762,7 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             return points;
         }
 
-        /// <summary>
-        /// Adds transform positions to the navigation point list if they are valid.
-        /// This lets assigned enemy starting positions become useful navigation anchors too.
-        /// </summary>
+
         private void AddTransformsAsNavigationPoints(
             List<Vector2> points,
             Transform[] sourcePoints,
@@ -911,9 +802,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             }
         }
 
-        /// <summary>
-        /// Returns true when a new point is too close to an already added point.
-        /// </summary>
         private static bool ContainsNearbyPoint(List<Vector2> points, Vector2 point, float minimumDistance)
         {
             float minimumDistanceSquared = minimumDistance * minimumDistance;
@@ -929,10 +817,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             return false;
         }
 
-        /// <summary>
-        /// Converts Unity BoxColliders into lightweight GPUObstacle structs.
-        /// The compute shader only needs top-down center/half-size values, not full collider objects.
-        /// </summary>
         private void InitializeObstacleBuffer()
         {
             int count = obstacleColliders != null ? obstacleColliders.Length : 0;
@@ -966,7 +850,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
 
                 obstacles[writeIndex] = new GPUObstacle
                 {
-                    // Convert from Unity X/Y/Z to top-down X/Z.
                     center = new Vector2(bounds.center.x, bounds.center.z),
                     halfSize = new Vector2(bounds.extents.x, bounds.extents.z),
                 };
@@ -983,9 +866,7 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             obstacleBuffer.SetData(obstacles);
         }
 
-        /// <summary>
-        /// Creates a one-value GPU buffer used by the shader to report if an enemy attacked the player.
-        /// </summary>
+
         private void InitializeAttackBuffer()
         {
             attackResultBuffer = new ComputeBuffer(
@@ -997,10 +878,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             attackResultBuffer.SetData(new uint[] { 0 });
         }
 
-        /// <summary>
-        /// Connects all buffers and constant settings to the compute shader.
-        /// This is the bridge between inspector values in C# and the GPU simulation.
-        /// </summary>
         private void InitializeComputeShader()
         {
             int patrolCount = GetPatrolPointCount();
@@ -1059,10 +936,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             return count;
         }
 
-        /// <summary>
-        /// Connects the enemy buffer to the material and prepares procedural drawing.
-        /// The material/shader reads the same _Enemies buffer that the compute shader updates.
-        /// </summary>
         private void InitializeRendering()
         {
             enemyMaterial.enableInstancing = true;
@@ -1072,10 +945,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             drawBounds = CalculateDrawBounds();
         }
 
-        /// <summary>
-        /// Calculates a large bounds area for procedural instanced rendering.
-        /// Unity uses this for visibility culling. If the bounds are too small, enemies may disappear.
-        /// </summary>
         private Bounds CalculateDrawBounds()
         {
             Bounds bounds = new(
@@ -1093,7 +962,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
 
             if (player != null)
             {
-                // Include the player so enemy chase movement near the player remains inside the draw bounds.
                 bounds.Encapsulate(player.position);
             }
 
@@ -1116,16 +984,12 @@ namespace Assets.EchoProtocol.Scripts.Enemies
 
             if (bounds.size.y < 20f)
             {
-                // The simulation is flat, but the render bounds still need enough height for the camera.
                 bounds.size = new Vector3(bounds.size.x, 20f, bounds.size.z);
             }
 
             return bounds;
         }
 
-        /// <summary>
-        /// Helper for adding optional transform references to a Bounds object.
-        /// </summary>
         private static void EncapsulateTransforms(ref Bounds bounds, Transform[] transforms)
         {
             if (transforms == null)
@@ -1142,15 +1006,10 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             }
         }
 
-        /// <summary>
-        /// Sends per-frame values to the compute shader and enemy material.
-        /// These values change during play, so they cannot only be set during initialization.
-        /// </summary>
         private void UpdateComputeParameters()
         {
             Vector3 playerWorldPosition = player.position;
 
-            // The enemy simulation is top-down, so Unity world X/Z becomes Vector2 X/Y.
             Vector2 flatPlayerPosition = new(playerWorldPosition.x, playerWorldPosition.z);
 
             enemyComputeShader.SetVector(
@@ -1160,28 +1019,21 @@ namespace Assets.EchoProtocol.Scripts.Enemies
 
             if (enemyMaterial != null)
             {
-                // The material uses player position for visual feedback while enemies chase the player.
                 enemyMaterial.SetVector(
                     PlayerPositionId,
                     new Vector4(flatPlayerPosition.x, flatPlayerPosition.y, 0f, 0f)
                 );
             }
 
-            // Clamp delta time to avoid huge simulation jumps after editor pauses or frame spikes.
             enemyComputeShader.SetFloat(DeltaTimeId, Mathf.Min(Time.deltaTime, 0.05f));
             enemyComputeShader.SetInt(ScanTriggeredId, scanWasTriggered ? 1 : 0);
 
             if (scanWasTriggered)
             {
-                // The shader only needs a scan position on the frame where a scan was triggered.
                 enemyComputeShader.SetVector(ScanPositionId, latestScanPosition);
             }
         }
 
-        /// <summary>
-        /// Clears the GPU attack flag before the next simulation step.
-        /// If the simulation catches the player, it will write 1 into this buffer again.
-        /// </summary>
         private void ResetAttackResult()
         {
             enemyComputeShader.Dispatch(
@@ -1192,10 +1044,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             );
         }
 
-        /// <summary>
-        /// Runs the compute shader simulation.
-        /// The shader uses 64 threads per group, so the group count must cover every enemy.
-        /// </summary>
         private void DispatchSimulation()
         {
             const int threadCount = 64;
@@ -1209,10 +1057,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             );
         }
 
-        /// <summary>
-        /// Draws all enemies from the GPU buffer without creating normal enemy GameObjects.
-        /// The instance ID inside the shader selects which GPUEnemy data belongs to each drawn mesh.
-        /// </summary>
         private void DrawEnemies()
         {
             Graphics.DrawMeshInstancedProcedural(
@@ -1224,20 +1068,12 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             );
         }
 
-        /// <summary>
-        /// Receives scan events from ScannerController.
-        /// The stored position is sent to the compute shader during the next Update().
-        /// </summary>
         private void HandleScan(Vector3 worldPosition)
         {
             latestScanPosition = new Vector2(worldPosition.x, worldPosition.z);
             scanWasTriggered = true;
         }
 
-        /// <summary>
-        /// Starts an asynchronous GPU readback for the attack result.
-        /// Asynchronous readback prevents the CPU from freezing while waiting for the GPU.
-        /// </summary>
         private void RequestAttackReadback()
         {
             if (readbackPending)
@@ -1249,10 +1085,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             AsyncGPUReadback.Request(attackResultBuffer, HandleAttackReadback);
         }
 
-        /// <summary>
-        /// Called by Unity when the GPU readback finishes.
-        /// If the GPU wrote a non-zero attack result, the GameManager triggers the lose state.
-        /// </summary>
         private void HandleAttackReadback(AsyncGPUReadbackRequest request)
         {
             readbackPending = false;
@@ -1272,8 +1104,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
 
         private void OnDestroy()
         {
-            // ComputeBuffers are GPU resources and must be released manually.
-            // Nulling them afterwards avoids accidental reuse after destruction.
             enemyBuffer?.Release();
             patrolPointBuffer?.Release();
             navigationPointBuffer?.Release();
@@ -1287,24 +1117,17 @@ namespace Assets.EchoProtocol.Scripts.Enemies
             attackResultBuffer = null;
         }
 
-        // Unity has Mathf.Abs for floats, but not for Vector2, so this helper applies it to both axes.
         private static Vector2 Abs(Vector2 value)
         {
             return new Vector2(Mathf.Abs(value.x), Mathf.Abs(value.y));
         }
 
 #if UNITY_EDITOR
-        /// <summary>
-        /// Debug visualization shown only in the Unity editor when this object is selected.
-        /// It helps check world bounds, spawn positions, generated navigation points, patrol route,
-        /// and obstacle boxes without entering play mode blindly.
-        /// </summary>
         private void OnDrawGizmosSelected()
         {
             Vector2 size = worldMaximum - worldMinimum;
             Vector2 center = (worldMinimum + worldMaximum) * 0.5f;
 
-            // Cyan rectangle: the area used for automatic point generation.
             Gizmos.color = Color.cyan;
             Gizmos.DrawWireCube(
                 new Vector3(center.x, enemyHeight, center.y),
@@ -1313,7 +1136,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
 
             if (startingPositions != null)
             {
-                // Red spheres: manual enemy spawn positions.
                 Gizmos.color = Color.red;
 
                 foreach (Transform startPosition in startingPositions)
@@ -1335,7 +1157,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
                 activePatrolPoints != null &&
                 activePatrolPoints.Length > 0)
             {
-                // Orange dots/lines: patrol route generated from the navigation points.
                 Gizmos.color = new Color(1f, 0.55f, 0f);
 
                 for (int i = 0; i < activePatrolPoints.Length; i++)
@@ -1367,7 +1188,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
 
             if (drawGeneratedNavigationPoints)
             {
-                // Green squares: automatically generated walkable navigation points.
                 Vector2[] debugNavigationPoints =
                     activeNavigationPoints != null && activeNavigationPoints.Length > 0
                         ? activeNavigationPoints
@@ -1391,7 +1211,6 @@ namespace Assets.EchoProtocol.Scripts.Enemies
 
             Gizmos.color = Color.magenta;
 
-            // Magenta boxes: obstacle colliders that are sent to the GPU.
             foreach (BoxCollider obstacleCollider in obstacleColliders)
             {
                 if (obstacleCollider == null)

@@ -4,12 +4,6 @@ namespace Assets.EchoProtocol.Scripts.Core
     using UnityEngine;
     using UnityEngine.SceneManagement;
 
-    /// <summary>
-    /// Central game-state script for the small objective loop:
-    /// collect enough energy cells, unlock the exit, then escape before the enemies catch the player.
-    /// Other scripts call this class when important events happen, so they do not all need to manage
-    /// win/lose state separately.
-    /// </summary>
     public class GameManager : MonoBehaviour
     {
         [Header("Objective")]

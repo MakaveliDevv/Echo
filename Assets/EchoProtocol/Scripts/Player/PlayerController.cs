@@ -4,42 +4,30 @@ namespace Assets.EchoProtocol.Scripts.Player
     using UnityEngine;
     using UnityEngine.InputSystem;
 
-    /// <summary>
-    /// First-person movement and camera look controller.
-    /// It uses Unity's CharacterController for collision-based movement instead of Rigidbody physics.
-    /// </summary>
     [RequireComponent(typeof(CharacterController))]
     public class PlayerController : MonoBehaviour
     {
         [Header("References")]
-        // Camera holder is pitched up/down. The player root rotates left/right.
         [SerializeField] private Transform cameraHolder;
 
         [Header("Movement")]
-        // Basic movement speeds in units per second.
         [SerializeField] private float walkSpeed = 4f;
         [SerializeField] private float sprintSpeed = 6f;
 
-        // Negative value pulls the player downward when not grounded.
         [SerializeField] private float gravity = -9.81f;
 
         [Header("Looking")]
-        // Mouse sensitivity is intentionally small because Mouse.delta can be large.
         [SerializeField] private float mouseSensitibity = 0.12f;
 
-        // Pitch limits stop the camera from flipping over vertically.
         [SerializeField] private float minimumPitch = -80f;
         [SerializeField] private float maximumPitch = 80f;
 
         private CharacterController characterController;
 
-        // Stored separately so gravity can build up over time.
         private float verticalVelocity;
 
-        // Current up/down camera angle.
         private float pitch;
 
-        // GameManager disables this when the player wins or loses.
         private bool controlsEnabled = true;
 
         private void Awake()
@@ -60,7 +48,6 @@ namespace Assets.EchoProtocol.Scripts.Player
             HandleLooking();
             HandleMovement();
 
-            // Escape toggles the cursor so the player can leave play mode or click UI while testing.
             if(Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame)
             {
                 bool shouldLock = Cursor.lockState != CursorLockMode.Locked;
@@ -75,10 +62,8 @@ namespace Assets.EchoProtocol.Scripts.Player
             
             Vector2 mouseDelta = Mouse.current.delta.ReadValue();
 
-            // Horizontal mouse movement rotates the whole player body.
             transform.Rotate(Vector3.up, mouseDelta.x * mouseSensitibity);
 
-            // Vertical mouse movement only rotates the camera holder.
             pitch -= mouseDelta.y * mouseSensitibity;
             pitch = Mathf.Clamp(pitch, minimumPitch, maximumPitch);
 
@@ -98,10 +83,8 @@ namespace Assets.EchoProtocol.Scripts.Player
             if (Keyboard.current.sKey.isPressed) vertical -= 1f;
             if (Keyboard.current.wKey.isPressed) vertical += 1f;
 
-            // Movement is relative to where the player is looking.
             Vector3 direction = transform.right * horizontal + transform.forward * vertical;
 
-            // Prevent diagonal movement from being faster than straight movement.
             direction = Vector3.ClampMagnitude(direction, 1f);
 
             bool sprinting = Keyboard.current.leftShiftKey.isPressed;
@@ -118,9 +101,6 @@ namespace Assets.EchoProtocol.Scripts.Player
             characterController.Move(velocity * Time.deltaTime);
         }
 
-        /// <summary>
-        /// Used by GameManager to freeze the player after win/lose.
-        /// </summary>
         public void SetControlsEnabled(bool enabled)
         {
             controlsEnabled = enabled;
@@ -129,7 +109,6 @@ namespace Assets.EchoProtocol.Scripts.Player
                 SetCursorLocked(false);
         }
 
-        // Cursor lock is private because only this movement script should decide how looking works.
         private void SetCursorLocked(bool locked)
         {
             Cursor.lockState = locked ? CursorLockMode.Locked : CursorLockMode.None;
