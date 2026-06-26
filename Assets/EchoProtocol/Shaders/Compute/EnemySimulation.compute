@@ -1,0 +1,731 @@
+#pragma kernel ResetAttackResult
+#pragma kernel SimulateEnemies
+
+#define STATE_DORMANT 0
+#define STATE_PATROL 1
+#define STATE_INVESTIGATE 2
+#define STATE_CHASE 3
+#define STATE_SEARCH 4
+#define STATE_RETURN_TO_PATROL 5
+#define MAX_NAVIGATION_POINTS 512
+
+struct GPUEnemy
+{
+    float2 position;
+    float2 velocity;
+    float2 targetPosition;
+
+    float maxSpeed;
+    float detectionDistance;
+    float attackDistance;
+
+    int state;
+    float stateTimer;
+    int patrolIndex;
+    int active;
+
+    float investigateVisual;
+    float chaseVisual;
+};
+
+struct GPUObstacle
+{
+    float2 center;
+    float2 halfSize;
+};
+
+RWStructuredBuffer<GPUEnemy> _Enemies;
+StructuredBuffer<float2> _PatrolPoints;
+StructuredBuffer<float2> _NavigationPoints;
+StructuredBuffer<GPUObstacle> _Obstacles;
+RWStructuredBuffer<uint> _AttackResult;
+
+int _EnemyCount;
+int _PatrolPointCount;
+int _NavigationPointCount;
+int _ObstacleCount;
+int _ScanTriggered;
+
+float _DeltaTime;
+float _SearchDuration;
+float _StoppingDistance;
+float _SteeringSpeed;
+float _ProbeDistance;
+float _EnemyRadius;
+
+float2 _PlayerPosition;
+float2 _ScanPosition;
+
+float2 NormalizeSafe(float2 value, float2 fallback)
+{
+    float valueLength = length(value);
+
+    if (valueLength <= 0.0001)
+    {
+        return fallback;
+    }
+
+    return value / valueLength;
+}
+
+bool PointInsideExpandedObstacle(float2 position, GPUObstacle obstacle)
+{
+    float2 expandedHalfSize = obstacle.halfSize + _EnemyRadius;
+    float2 difference = abs(position - obstacle.center);
+
+    return
+        difference.x <= expandedHalfSize.x &&
+        difference.y <= expandedHalfSize.y;
+}
+
+bool IsBlocked(float2 position)
+{
+    for (int i = 0; i < _ObstacleCount; i++)
+    {
+        if (PointInsideExpandedObstacle(position, _Obstacles[i]))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool SegmentIntersectsExpandedObstacle(
+    float2 start,
+    float2 end,
+    GPUObstacle obstacle)
+{
+    float2 expandedHalfSize = obstacle.halfSize + _EnemyRadius + 0.15;
+    float2 direction = end - start;
+
+    float tMin = 0.0;
+    float tMax = 1.0;
+
+    if (abs(direction.x) < 0.0001)
+    {
+        if (start.x < obstacle.center.x - expandedHalfSize.x ||
+            start.x > obstacle.center.x + expandedHalfSize.x)
+        {
+            return false;
+        }
+    }
+    else
+    {
+        float inverseDirection = 1.0 / direction.x;
+        float t1 = (obstacle.center.x - expandedHalfSize.x - start.x) * inverseDirection;
+        float t2 = (obstacle.center.x + expandedHalfSize.x - start.x) * inverseDirection;
+
+        tMin = max(tMin, min(t1, t2));
+        tMax = min(tMax, max(t1, t2));
+
+        if (tMin > tMax)
+        {
+            return false;
+        }
+    }
+
+    if (abs(direction.y) < 0.0001)
+    {
+        if (start.y < obstacle.center.y - expandedHalfSize.y ||
+            start.y > obstacle.center.y + expandedHalfSize.y)
+        {
+            return false;
+        }
+    }
+    else
+    {
+        float inverseDirection = 1.0 / direction.y;
+        float t1 = (obstacle.center.y - expandedHalfSize.y - start.y) * inverseDirection;
+        float t2 = (obstacle.center.y + expandedHalfSize.y - start.y) * inverseDirection;
+
+        tMin = max(tMin, min(t1, t2));
+        tMax = min(tMax, max(t1, t2));
+
+        if (tMin > tMax)
+        {
+            return false;
+        }
+    }
+
+    return tMax >= 0.0 && tMin <= 1.0;
+}
+
+bool FindBlockingObstacle(
+    float2 position,
+    float2 target,
+    out GPUObstacle blockingObstacle)
+{
+    blockingObstacle.center = float2(0.0, 0.0);
+    blockingObstacle.halfSize = float2(0.0, 0.0);
+
+    float2 toTarget = target - position;
+    float targetDistance = length(toTarget);
+
+    if (targetDistance <= 0.001)
+    {
+        return false;
+    }
+
+    float lookAheadDistance = min(targetDistance, max(_ProbeDistance, 0.5));
+    float2 lookAheadEnd = position + toTarget / targetDistance * lookAheadDistance;
+
+    bool found = false;
+    float bestDistance = 100000.0;
+
+    for (int i = 0; i < _ObstacleCount; i++)
+    {
+        GPUObstacle obstacle = _Obstacles[i];
+
+        if (!SegmentIntersectsExpandedObstacle(position, lookAheadEnd, obstacle))
+        {
+            continue;
+        }
+
+        float obstacleDistance = distance(position, obstacle.center);
+
+        if (obstacleDistance < bestDistance)
+        {
+            bestDistance = obstacleDistance;
+            blockingObstacle = obstacle;
+            found = true;
+        }
+    }
+
+    return found;
+}
+
+bool IsSegmentBlocked(float2 start, float2 end)
+{
+    for (int i = 0; i < _ObstacleCount; i++)
+    {
+        if (SegmentIntersectsExpandedObstacle(start, end, _Obstacles[i]))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool TryFindVisibleNavigationPoint(
+    float2 position,
+    float2 target,
+    out float2 navigationPoint)
+{
+    navigationPoint = target;
+
+    if (_NavigationPointCount <= 0)
+    {
+        return false;
+    }
+
+    int candidateCount = min(_NavigationPointCount, MAX_NAVIGATION_POINTS);
+    float currentTargetDistance = distance(position, target);
+    float minimumUsefulDistance = max(_StoppingDistance * 2.0, 1.0);
+    float bestScore = 1000000.0;
+    bool foundPoint = false;
+
+    for (int i = 0; i < candidateCount; i++)
+    {
+        float2 candidate = _NavigationPoints[i];
+        float distanceToCandidate = distance(position, candidate);
+
+        if (distanceToCandidate < minimumUsefulDistance)
+        {
+            continue;
+        }
+
+        if (IsBlocked(candidate))
+        {
+            continue;
+        }
+
+        if (IsSegmentBlocked(position, candidate))
+        {
+            continue;
+        }
+
+        float distanceCandidateToTarget = distance(candidate, target);
+        bool candidateCanSeeTarget = !IsSegmentBlocked(candidate, target);
+
+        float score = distanceToCandidate + distanceCandidateToTarget;
+
+        if (candidateCanSeeTarget)
+        {
+            score -= 20.0;
+        }
+        else
+        {
+            score += 25.0;
+        }
+
+        // A helper point is allowed to move sideways or slightly back if
+        // that is required to leave a corridor, but prefer points that
+        // eventually make progress toward the actual target.
+        if (distanceCandidateToTarget > currentTargetDistance + minimumUsefulDistance)
+        {
+            score += 30.0;
+        }
+
+        // Avoid selecting very distant helper points unless they are clearly
+        // useful. This keeps the steering stable in larger rooms.
+        if (distanceToCandidate > max(_ProbeDistance * 4.0, 12.0))
+        {
+            score += 15.0;
+        }
+
+        if (score < bestScore)
+        {
+            bestScore = score;
+            navigationPoint = candidate;
+            foundPoint = true;
+        }
+    }
+
+    return foundPoint;
+}
+
+float ScoreDetourCorner(
+    float2 position,
+    float2 target,
+    GPUObstacle blockingObstacle,
+    float2 corner)
+{
+    float distanceToCorner = distance(position, corner);
+    float distanceCornerToTarget = distance(corner, target);
+
+    float score = distanceToCorner + distanceCornerToTarget;
+
+    bool cornerIsBlocked = IsBlocked(corner);
+    bool pathToCornerBlocked = IsSegmentBlocked(position, corner);
+    bool cornerStillBlockedBySameObstacle =
+        SegmentIntersectsExpandedObstacle(
+            corner,
+            target,
+            blockingObstacle
+        );
+
+    if (cornerIsBlocked)
+    {
+        score += 10000.0;
+    }
+
+    if (pathToCornerBlocked)
+    {
+        score += 80.0;
+    }
+
+    if (cornerStillBlockedBySameObstacle)
+    {
+        score += 35.0;
+    }
+
+    // This is the important anti-stuck rule:
+    // if the enemy is already basically at this corner, but this corner
+    // still does not give a route around the blocking obstacle, do not
+    // keep selecting it forever.
+    if (distanceToCorner < max(_StoppingDistance * 3.0, 1.5) &&
+        cornerStillBlockedBySameObstacle)
+    {
+        score += 1000.0;
+    }
+
+    return score;
+}
+
+float2 ChooseDetourPoint(
+    float2 position,
+    float2 target,
+    GPUObstacle obstacle)
+{
+    float2 expandedHalfSize = obstacle.halfSize + _EnemyRadius + 2.0;
+
+    float2 cornerA = obstacle.center + float2(-expandedHalfSize.x, -expandedHalfSize.y);
+    float2 cornerB = obstacle.center + float2(-expandedHalfSize.x, expandedHalfSize.y);
+    float2 cornerC = obstacle.center + float2(expandedHalfSize.x, -expandedHalfSize.y);
+    float2 cornerD = obstacle.center + float2(expandedHalfSize.x, expandedHalfSize.y);
+
+    float scoreA = ScoreDetourCorner(position, target, obstacle, cornerA);
+    float scoreB = ScoreDetourCorner(position, target, obstacle, cornerB);
+    float scoreC = ScoreDetourCorner(position, target, obstacle, cornerC);
+    float scoreD = ScoreDetourCorner(position, target, obstacle, cornerD);
+
+    float2 bestCorner = cornerA;
+    float bestScore = scoreA;
+
+    if (scoreB < bestScore)
+    {
+        bestScore = scoreB;
+        bestCorner = cornerB;
+    }
+
+    if (scoreC < bestScore)
+    {
+        bestScore = scoreC;
+        bestCorner = cornerC;
+    }
+
+    if (scoreD < bestScore)
+    {
+        bestCorner = cornerD;
+    }
+
+    return bestCorner;
+}
+
+float2 CalculateMovementDirection(float2 position, float2 target)
+{
+    float2 toTarget = target - position;
+    float2 desiredDirection = NormalizeSafe(toTarget, float2(0.0, 1.0));
+
+    GPUObstacle blockingObstacle;
+
+    if (FindBlockingObstacle(position, target, blockingObstacle))
+    {
+        float2 navigationPoint;
+
+        if (TryFindVisibleNavigationPoint(position, target, navigationPoint))
+        {
+            return NormalizeSafe(navigationPoint - position, desiredDirection);
+        }
+
+        float2 detourPoint = ChooseDetourPoint(position, target, blockingObstacle);
+        return NormalizeSafe(detourPoint - position, desiredDirection);
+    }
+
+    return desiredDirection;
+}
+
+bool ReachedTarget(GPUEnemy enemy)
+{
+    return distance(enemy.position, enemy.targetPosition) <= _StoppingDistance;
+}
+
+void MoveEnemy(inout GPUEnemy enemy, float speedMultiplier)
+{
+    float2 toTarget = enemy.targetPosition - enemy.position;
+    float targetDistance = length(toTarget);
+
+    if (targetDistance <= _StoppingDistance)
+    {
+        enemy.velocity = lerp(
+            enemy.velocity,
+            float2(0.0, 0.0),
+            saturate(_SteeringSpeed * _DeltaTime)
+        );
+
+        return;
+    }
+
+    float2 movementDirection = CalculateMovementDirection(
+        enemy.position,
+        enemy.targetPosition
+    );
+
+    float2 desiredVelocity =
+        movementDirection *
+        enemy.maxSpeed *
+        speedMultiplier;
+
+    enemy.velocity = lerp(
+        enemy.velocity,
+        desiredVelocity,
+        saturate(_SteeringSpeed * _DeltaTime)
+    );
+
+    float2 proposedPosition =
+        enemy.position +
+        enemy.velocity * _DeltaTime;
+
+    if (!IsBlocked(proposedPosition))
+    {
+        enemy.position = proposedPosition;
+        return;
+    }
+
+    float2 slideX =
+        enemy.position +
+        float2(enemy.velocity.x, 0.0) * _DeltaTime;
+
+    float2 slideZ =
+        enemy.position +
+        float2(0.0, enemy.velocity.y) * _DeltaTime;
+
+    bool canSlideX = !IsBlocked(slideX);
+    bool canSlideZ = !IsBlocked(slideZ);
+
+    if (canSlideX && canSlideZ)
+    {
+        if (abs(enemy.velocity.x) > abs(enemy.velocity.y))
+        {
+            enemy.position = slideX;
+            enemy.velocity.y = 0.0;
+        }
+        else
+        {
+            enemy.position = slideZ;
+            enemy.velocity.x = 0.0;
+        }
+    }
+    else if (canSlideX)
+    {
+        enemy.position = slideX;
+        enemy.velocity.y = 0.0;
+    }
+    else if (canSlideZ)
+    {
+        enemy.position = slideZ;
+        enemy.velocity.x = 0.0;
+    }
+    else
+    {
+        float fallbackStep =
+            enemy.maxSpeed *
+            speedMultiplier *
+            _DeltaTime;
+
+        float2 fallbackDirectionA = NormalizeSafe(float2(enemy.velocity.x, enemy.velocity.y), movementDirection);
+        float2 fallbackDirectionB = float2(-movementDirection.y, movementDirection.x);
+        float2 fallbackDirectionC = -fallbackDirectionB;
+        float2 fallbackDirectionD = -movementDirection;
+
+        float2 fallbackA = enemy.position + fallbackDirectionA * fallbackStep;
+        float2 fallbackB = enemy.position + fallbackDirectionB * fallbackStep;
+        float2 fallbackC = enemy.position + fallbackDirectionC * fallbackStep;
+        float2 fallbackD = enemy.position + fallbackDirectionD * fallbackStep * 0.5;
+
+        if (!IsBlocked(fallbackA))
+        {
+            enemy.position = fallbackA;
+            enemy.velocity = fallbackDirectionA * enemy.maxSpeed * speedMultiplier;
+        }
+        else if (!IsBlocked(fallbackB))
+        {
+            enemy.position = fallbackB;
+            enemy.velocity = fallbackDirectionB * enemy.maxSpeed * speedMultiplier;
+        }
+        else if (!IsBlocked(fallbackC))
+        {
+            enemy.position = fallbackC;
+            enemy.velocity = fallbackDirectionC * enemy.maxSpeed * speedMultiplier;
+        }
+        else if (!IsBlocked(fallbackD))
+        {
+            enemy.position = fallbackD;
+            enemy.velocity = float2(0.0, 0.0);
+        }
+        else
+        {
+            enemy.velocity = float2(0.0, 0.0);
+        }
+    }
+}
+
+void UpdatePatrol(inout GPUEnemy enemy)
+{
+    if (_PatrolPointCount <= 0)
+    {
+        enemy.velocity = float2(0.0, 0.0);
+        return;
+    }
+
+    enemy.patrolIndex = clamp(enemy.patrolIndex, 0, _PatrolPointCount - 1);
+    enemy.targetPosition = _PatrolPoints[enemy.patrolIndex];
+
+    MoveEnemy(enemy, 0.55);
+
+    if (ReachedTarget(enemy))
+    {
+        enemy.patrolIndex = (enemy.patrolIndex + 1) % _PatrolPointCount;
+        enemy.targetPosition = _PatrolPoints[enemy.patrolIndex];
+    }
+}
+
+void UpdateInvestigate(inout GPUEnemy enemy)
+{
+    MoveEnemy(enemy, 0.8);
+
+    if (ReachedTarget(enemy))
+    {
+        enemy.state = STATE_RETURN_TO_PATROL;
+
+        if (_PatrolPointCount > 0)
+        {
+            enemy.patrolIndex = clamp(enemy.patrolIndex, 0, _PatrolPointCount - 1);
+            enemy.targetPosition = _PatrolPoints[enemy.patrolIndex];
+        }
+    }
+}
+
+void UpdateChase(inout GPUEnemy enemy, float distanceToPlayer)
+{
+    enemy.targetPosition = _PlayerPosition;
+    MoveEnemy(enemy, 1.0);
+
+    if (distanceToPlayer > enemy.detectionDistance * 1.5)
+    {
+        enemy.state = STATE_RETURN_TO_PATROL;
+
+        if (_PatrolPointCount > 0)
+        {
+            enemy.patrolIndex = clamp(enemy.patrolIndex, 0, _PatrolPointCount - 1);
+            enemy.targetPosition = _PatrolPoints[enemy.patrolIndex];
+        }
+    }
+}
+
+void UpdateSearch(inout GPUEnemy enemy)
+{
+    enemy.stateTimer -= _DeltaTime;
+    MoveEnemy(enemy, 0.7);
+
+    if (enemy.stateTimer <= 0.0)
+    {
+        enemy.state = STATE_PATROL;
+    }
+}
+
+void UpdateReturnToPatrol(inout GPUEnemy enemy)
+{
+    if (_PatrolPointCount <= 0)
+    {
+        enemy.state = STATE_PATROL;
+        return;
+    }
+
+    enemy.patrolIndex = clamp(enemy.patrolIndex, 0, _PatrolPointCount - 1);
+    enemy.targetPosition = _PatrolPoints[enemy.patrolIndex];
+
+    MoveEnemy(enemy, 0.8);
+
+    if (ReachedTarget(enemy))
+    {
+        enemy.state = STATE_PATROL;
+    }
+}
+
+float MoveTowardsTarget(float current, float target, float speed)
+{
+    float stepSize = max(speed, 0.0) * _DeltaTime;
+
+    if (current < target)
+    {
+        return min(current + stepSize, target);
+    }
+
+    return max(current - stepSize, target);
+}
+
+void UpdateVisualFeedback(inout GPUEnemy enemy)
+{
+    float investigateTarget = enemy.state == STATE_INVESTIGATE ? 1.0 : 0.0;
+    float chaseTarget = enemy.state == STATE_CHASE ? 1.0 : 0.0;
+
+    enemy.investigateVisual = MoveTowardsTarget(
+        enemy.investigateVisual,
+        investigateTarget,
+        investigateTarget > enemy.investigateVisual ? 5.5 : 2.0
+    );
+
+    enemy.chaseVisual = MoveTowardsTarget(
+        enemy.chaseVisual,
+        chaseTarget,
+        chaseTarget > enemy.chaseVisual ? 6.5 : 2.25
+    );
+}
+
+[numthreads(1, 1, 1)]
+void ResetAttackResult(uint3 id : SV_DispatchThreadID)
+{
+    _AttackResult[0] = 0;
+}
+
+[numthreads(64, 1, 1)]
+void SimulateEnemies(uint3 id : SV_DispatchThreadID)
+{
+    uint index = id.x;
+
+    if (index >= (uint)_EnemyCount)
+    {
+        return;
+    }
+
+    GPUEnemy enemy = _Enemies[index];
+
+    if (enemy.active == 0)
+    {
+        return;
+    }
+
+    float distanceToPlayer = distance(enemy.position, _PlayerPosition);
+
+    if (distanceToPlayer <= enemy.attackDistance)
+    {
+        uint previousValue;
+        InterlockedExchange(_AttackResult[0], 1, previousValue);
+    }
+
+    if (enemy.state != STATE_DORMANT &&
+        distanceToPlayer <= enemy.detectionDistance)
+    {
+        enemy.state = STATE_CHASE;
+        enemy.targetPosition = _PlayerPosition;
+    }
+
+    if (_ScanTriggered == 1)
+    {
+        enemy.state = STATE_INVESTIGATE;
+        enemy.targetPosition = _ScanPosition;
+        enemy.stateTimer = 0.0;
+    }
+
+    switch (enemy.state)
+    {
+        case STATE_DORMANT:
+        {
+            enemy.velocity = float2(0.0, 0.0);
+            break;
+        }
+
+        case STATE_PATROL:
+        {
+            UpdatePatrol(enemy);
+            break;
+        }
+
+        case STATE_INVESTIGATE:
+        {
+            UpdateInvestigate(enemy);
+            break;
+        }
+
+        case STATE_CHASE:
+        {
+            UpdateChase(enemy, distanceToPlayer);
+            break;
+        }
+
+        case STATE_SEARCH:
+        {
+            UpdateSearch(enemy);
+            break;
+        }
+
+        case STATE_RETURN_TO_PATROL:
+        {
+            UpdateReturnToPatrol(enemy);
+            break;
+        }
+
+        default:
+        {
+            enemy.state = STATE_PATROL;
+            break;
+        }
+    }
+
+    UpdateVisualFeedback(enemy);
+
+    _Enemies[index] = enemy;
+}

@@ -1,0 +1,71 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &-2951797107291703437
+MonoBehaviour:
+  m_ObjectHideFlags: 11
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d0353a89b1f911e48b9e16bdc9f2e058, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Editor::UnityEditor.Rendering.Universal.AssetVersion
+  version: 10
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: M_GPUEnemy_Hologram
+  m_Shader: {fileID: 4800000, guid: cdfac60f832ca82e24bdc4d1887f8788, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords:
+  - _NUMBERSENABLED_ON
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 1
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_LockedProperties: 
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs: []
+    m_Ints: []
+    m_Floats:
+    - _BaseAlpha: 0.08
+    - _ChaseGlowBoost: 1.5
+    - _ChaseSpeedBoost: 2.5
+    - _EnemyHeight: 1
+    - _EnemyScale: 1
+    - _InvestigateSpeedBoost: 0.6
+    - _NumberAlpha: 0.9
+    - _NumberColumns: 10
+    - _NumberRows: 16
+    - _NumberSpeed: 0.65
+    - _NumberThickness: 0.08
+    - _NumbersEnabled: 1
+    - _PulseStrength: 0.18
+    - _RimAlpha: 0.85
+    - _RimPower: 3.5
+    - _ScanlineAlpha: 0.3
+    - _ScanlineDensity: 55
+    - _ScanlineSpeed: 2
+    m_Colors:
+    - _BaseColor: {r: 0, g: 1, b: 1, a: 1}
+    - _ChaseNumberColor: {r: 1, g: 0, b: 0, a: 1}
+    - _InvestigateNumberColor: {r: 1, g: 0.45, b: 0, a: 1}
+    - _LineColor: {r: 0, g: 1, b: 1, a: 1}
+    - _NumberColor: {r: 0, g: 1, b: 1, a: 1}
+    - _NumberFlowDirection: {r: 0, g: 1, b: 0, a: 0}
+    - _PlayerPosition: {r: -14.9111595, g: 42.99969, b: 0, a: 0}
+    - _RimColor: {r: 0, g: 1, b: 1, a: 1}
+    - _ScanlineFlowDirection: {r: 0, g: 1, b: 0, a: 0}
+  m_BuildTextureStacks: []
+  m_AllowLocking: 1

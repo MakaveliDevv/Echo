@@ -1,0 +1,90 @@
+#pragma kernel ScanWave
+
+RWTexture2D<float4> _ScanWaveResult;
+
+int2 _TextureSize;
+
+float _WaveRadius;
+float _WaveWidth;
+float _TrailLength;
+float _NoiseScale;
+float _NoiseAmount;
+float _ScanTime;
+
+float Hash21(float2 value)
+{
+    value = frac(value * float2(123.34, 456.21));
+    value += dot(value, value + 45.32);
+
+    return frac(value.x * value.y);
+}
+
+float SmoothNoise(float2 value)
+{
+    float2 cell = floor(value);
+    float2 local = frac(value);
+
+    local = local * local * (3.0 - 2.0 * local);
+
+    float a = Hash21(cell);
+    float b = Hash21(cell + float2(1.0, 0.0));
+    float c = Hash21(cell + float2(0.0, 1.0));
+    float d = Hash21(cell + float2(1.0, 1.0));
+
+    return lerp(
+        lerp(a, b, local.x),
+        lerp(c, d, local.x),
+        local.y
+    );
+}
+
+[numthreads(8, 8, 1)]
+void ScanWave(uint3 threadId : SV_DispatchThreadID)
+{
+    if (threadId.x >= (uint)_TextureSize.x ||
+        threadId.y >= (uint)_TextureSize.y)
+    {
+        return;
+    }
+
+    float2 uv = (threadId.xy + 0.5) / (float2)_TextureSize;
+
+    float angle = uv.y * 6.28318530718;
+
+    float2 direction = float2(cos(angle), sin(angle));
+
+    float noiseA = SmoothNoise(direction * _NoiseScale + _ScanTime * float2(0.31, -0.23));
+
+    float noiseB = SmoothNoise(direction * (_NoiseScale * 2.13) - _ScanTime * float2(0.17, 0.29));
+
+    float noise = noiseA * 0.7 + noiseB * 0.3;
+
+    float safeWidth = max(_WaveWidth, 0.0001);
+
+    float distortedRadius = _WaveRadius + (noise - 0.5) * _NoiseAmount * safeWidth;
+
+    float distanceToFront = abs(uv.x - distortedRadius);
+
+    float edge = saturate(1.0 - distanceToFront / safeWidth);
+
+    edge = smoothstep(0.0, 1.0, edge);
+    edge *= edge;
+
+    float halo = saturate(1.0 - distanceToFront / (safeWidth * 3.5));
+
+    halo *= halo * 0.45;
+
+    float safeTrail = max(_TrailLength, 0.0001);
+
+    float distanceBehindFront = distortedRadius - uv.x;
+
+    float trail = step(0.0, distanceBehindFront) * saturate(1.0 - distanceBehindFront / safeTrail);
+
+    float ripple = 0.68 + 0.32 * cos(distanceBehindFront / safeTrail * 25.13274123 + noise * 5.0);
+
+    trail *= ripple * (1.0 - edge * 0.55);
+
+    float originFade = smoothstep(0.0, safeWidth * 1.5, uv.x);
+
+    _ScanWaveResult[threadId.xy] = float4(edge, trail * originFade, halo, 1.0);
+}
